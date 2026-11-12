@@ -3,7 +3,7 @@ import type { Database } from './lib/database.types';
 type TableName = keyof Database['public']['Tables'];
 type Row<T extends TableName> = Database['public']['Tables'][T]['Row'];
 
-export type Business = Pick<Row<'businesses'>, 'id' | 'name' | 'currency_code' | 'tax_rate'>;
+export type Business = Row<'businesses'>;
 export type Product = Row<'products'>;
 export type Customer = Row<'customers'>;
 export type Sale = Row<'sales'>;
@@ -40,7 +40,7 @@ export type WorkspaceProps = {
   role: BusinessRole;
   data: WorkspaceData;
   onRefresh: () => Promise<void>;
-  onBusinessUpdated: (name: string) => void;
+  onBusinessUpdated: (business: Business) => void;
   onSignOut: () => Promise<void>;
   sessionEmail: string;
 };

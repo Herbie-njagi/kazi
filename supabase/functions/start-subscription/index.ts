@@ -86,7 +86,7 @@ Deno.serve(async (request) => {
     let paystackPlanCode: string | undefined;
     let mpesaPhone: string | undefined;
     if (provider === 'paystack') {
-      paystackPlanCode = requiredEnv(
+      paystackPlanCode = Deno.env.get(
         interval === 'monthly' ? 'PAYSTACK_MONTHLY_PLAN_CODE' : 'PAYSTACK_YEARLY_PLAN_CODE',
       );
       requiredEnv('PAYSTACK_SECRET_KEY');
@@ -126,7 +126,7 @@ Deno.serve(async (request) => {
           amount: amountKes * 100,
           currency: 'KES',
           reference: checkoutId,
-          plan: paystackPlanCode,
+          ...(paystackPlanCode ? { plan: paystackPlanCode } : {}),
           callback_url: requiredEnv('APP_SITE_URL'),
           metadata: {
             checkout_id: checkoutId,

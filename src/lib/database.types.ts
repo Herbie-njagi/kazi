@@ -29,11 +29,13 @@ export type Database = {
           name: string;
           currency_code: 'KES';
           tax_rate: number;
+          payment_method: 'till' | 'paybill' | 'pochi' | 'phone' | null;
+          payment_identifier: string | null;
           created_at: string;
           updated_at: string;
         },
-        { name: string },
-        { name?: string }
+        { name: string; payment_method?: 'till' | 'paybill' | 'pochi' | 'phone' | null; payment_identifier?: string | null },
+        { name?: string; payment_method?: 'till' | 'paybill' | 'pochi' | 'phone' | null; payment_identifier?: string | null }
       >;
       business_members: Table<
         {
@@ -109,6 +111,7 @@ export type Database = {
           status: 'completed' | 'refunded';
           payment_method: 'mpesa';
           mpesa_reference: string | null;
+          customer_phone: string | null;
           subtotal: number;
           tax: number;
           total: number;
@@ -193,8 +196,27 @@ export type Database = {
           provider_customer_id: string | null;
           updated_at: string;
         },
-        never,
-        never
+        {
+          business_id: string;
+          provider: 'mpesa' | 'paystack';
+          billing_interval: 'monthly' | 'yearly';
+          status?: 'active' | 'past_due' | 'cancelled';
+          current_period_start?: string;
+          current_period_end?: string;
+          provider_subscription_id?: string | null;
+          provider_customer_id?: string | null;
+          updated_at?: string;
+        },
+        {
+          provider?: 'mpesa' | 'paystack';
+          billing_interval?: 'monthly' | 'yearly';
+          status?: 'active' | 'past_due' | 'cancelled';
+          current_period_start?: string;
+          current_period_end?: string;
+          provider_subscription_id?: string | null;
+          provider_customer_id?: string | null;
+          updated_at?: string;
+        }
       >;
       subscription_checkouts: Table<
         {
@@ -257,6 +279,7 @@ export type Database = {
           p_customer_id: string | null;
           p_items: Json;
           p_mpesa_reference: string | null;
+          p_customer_phone: string | null;
         };
         Returns: { sale_id: string; receipt_number: string; sale_total: number }[];
       };
@@ -297,6 +320,18 @@ export type Database = {
           status: string;
           current_period_end: string;
         }[];
+      };
+      record_subscription_payment: {
+        Args: {
+          p_checkout_id?: string | null;
+          p_provider_reference: string;
+          p_amount_kes: number;
+          p_paid_at: string;
+          p_provider_subscription_id?: string | null;
+          p_provider_customer_id?: string | null;
+          p_business_id?: string | null;
+        };
+        Returns: boolean;
       };
     };
     Enums: Empty;

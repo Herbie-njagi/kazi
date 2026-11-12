@@ -57,7 +57,7 @@ type Props = {
   onNavigate: (view: AppView) => void;
   onRunAction: (action: () => Promise<void>, success: string) => Promise<boolean>;
   onRefresh: () => Promise<void>;
-  onBusinessUpdated: (name: string) => void;
+  onBusinessUpdated: (business: Business) => void;
   sessionEmail: string;
   onSignOut: () => Promise<void>;
 };
@@ -409,6 +409,7 @@ function PosPage(props: Props) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All products');
   const [lastReceipt, setLastReceipt] = useState<{ number: string; total: number } | null>(null);
+  const [customerPhone, setCustomerPhone] = useState('');
   const categories = ['All products', ...new Set(props.data.products.flatMap((product) => product.is_active && product.category ? [product.category] : []))];
   const products = props.data.products.filter((product) => {
     if (!product.is_active || product.stock_quantity <= 0) return false;
@@ -445,6 +446,7 @@ function PosPage(props: Props) {
         p_customer_id: props.selectedCustomer || null,
         p_items: props.cart.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
         p_mpesa_reference: props.mpesaReference.trim() || null,
+        p_customer_phone: customerPhone.trim() || null,
       });
       if (error) throw error;
       const receipt = receipts?.[0];
@@ -489,11 +491,17 @@ function PosPage(props: Props) {
           <div className="checkout-fields">
             <label className="field"><span>Customer <small>Optional</small></span><select value={props.selectedCustomer} onChange={(event) => props.setSelectedCustomer(event.target.value)}><option value="">Walk-in customer</option>{props.data.customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.name}{customer.phone ? ` · ${customer.phone}` : ''}</option>)}</select></label>
             <label className="field"><span>M-Pesa reference <small>Optional</small></span><input value={props.mpesaReference} onChange={(event) => props.setMpesaReference(event.target.value)} maxLength={64} placeholder="e.g. QHX7AB12CD" /></label>
+            <label className="field"><span>Customer phone <small>Optional</small></span><input type="tel" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} maxLength={20} placeholder="e.g. 07XXXXXXXX" /></label>
           </div>
           <div className="cart-summary">
             <div><span>Subtotal</span><span>{formatMoney(total)}</span></div><div><span>Tax</span><span>{formatMoney(0)}</span></div>
             <div className="cart-grand-total"><strong>Total due</strong><strong>{formatMoney(total)}</strong></div>
-            <p className="payment-note"><span className="mpesa-mark">M</span> Confirm payment in M-Pesa before recording this sale</p>
+            {props.business.payment_identifier && (
+              <div style={{ padding: '0.75rem', background: '#f0fdf4', borderRadius: '0.375rem', marginTop: '1rem', border: '1px solid #bbf7d0', fontSize: '0.875rem' }}>
+                <p style={{ margin: 0 }}>Pay to: <strong>{props.business.payment_method?.toUpperCase()} · {props.business.payment_identifier}</strong></p>
+              </div>
+            )}
+            <p className="payment-note"><span className="mpesa-mark">M</span> Confirm payment before recording this sale</p>
             <button type="button" className="primary-button full-width" disabled={!props.cart.length} onClick={() => void checkout()}>Complete sale <ArrowRight size={17} /></button>
           </div>
         </aside>
@@ -773,18 +781,28 @@ function ReportsPage(props: Props) {
 
 function SettingsPage(props: Props) {
   const [name, setName] = useState(props.business.name);
+  const [paymentMethod, setPaymentMethod] = useState(props.business.payment_method ?? 'till');
+  const [paymentIdentifier, setPaymentIdentifier] = useState(props.business.payment_identifier ?? '');
   const canManage = props.role !== 'staff';
-  const dirty = name.trim() !== props.business.name;
+  const dirty = name.trim() !== props.business.name || paymentMethod !== (props.business.payment_method ?? 'till') || paymentIdentifier.trim() !== (props.business.payment_identifier ?? '');
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!name.trim()) return;
     const nextName = name.trim();
+    const nextMethod = paymentMethod;
+    const nextIdentifier = paymentIdentifier.trim();
     const success = await props.onRunAction(async () => {
-      const { error } = await getClient().from('businesses').update({ name: nextName }).eq('id', props.business.id);
+      const { error } = await getClient().from('businesses').update({ 
+        name: nextName,
+        payment_method: nextMethod as any,
+        payment_identifier: nextIdentifier || null
+      }).eq('id', props.business.id);
       if (error) throw error;
-      props.onBusinessUpdated(nextName);
+      props.onBusinessUpdated({ ...props.business, name: nextName, payment_method: nextMethod as any, payment_identifier: nextIdentifier || null });
     }, 'Business details updated.');
-    if (success) setName(nextName);
+    if (success) {
+      setName(nextName);
+    }
   };
 
   return (
@@ -796,10 +814,18 @@ function SettingsPage(props: Props) {
           <div className="panel-heading"><div><h3>Business details</h3><p>Workspace information used across your records.</p></div></div>
           <form className="form-stack settings-form" onSubmit={(event) => void save(event)}>
             <label className="field"><span>Business name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required disabled={!canManage} /></label>
+            <label className="field">
+              <span>Payment method</span>
+              <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as any)} disabled={!canManage}>
+                <option value="till">Till Number</option>
+                <option value="paybill">Paybill</option>
+                <option value="pochi">Pochi la Biashara</option>
+                <option value="phone">Phone Number</option>
+              </select>
+            </label>
+            <label className="field"><span>Payment identifier</span><input value={paymentIdentifier} onChange={(event) => setPaymentIdentifier(event.target.value)} maxLength={120} disabled={!canManage} placeholder="e.g. 123456" /></label>
             <div className="settings-static-row"><span>Business ID</span><code>{props.business.id}</code></div>
             <div className="settings-static-row"><span>Currency</span><strong>{props.business.currency_code} · Kenyan shilling</strong></div>
-            <div className="settings-static-row"><span>Tax</span><strong>Not applied</strong></div>
-            <div className="settings-static-row"><span>Payment recording</span><strong><span className="mpesa-mark small">M</span> M-Pesa</strong></div>
             {canManage && <button className="primary-button" type="submit" disabled={!dirty}><Check size={16} /> Save business details</button>}
             {!canManage && <p className="field-help">Only a business owner or administrator can edit workspace details.</p>}
           </form>
@@ -815,3 +841,4 @@ function SettingsPage(props: Props) {
     </>
   );
 }
+

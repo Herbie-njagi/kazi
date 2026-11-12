@@ -17,6 +17,7 @@ import {
 import type { AppView, Business, CartLine, WorkspaceProps } from './app.types';
 import { LoadingScreen } from './components';
 import { FeaturePage } from './features';
+import { isUsingMockDatabase } from './lib/supabase';
 
 const navigation: { id: AppView; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -118,7 +119,7 @@ export function Workspace(props: Props) {
             <span className="today-label">
               {new Intl.DateTimeFormat('en-KE', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}
             </span>
-            <span className="connection-status"><span /> {props.loadingData ? 'Syncing' : 'Connected'}</span>
+            <span className="connection-status"><span /> {props.loadingData ? 'Syncing' : isUsingMockDatabase ? 'Demo Store' : 'Connected'}</span>
             <span className="profile-avatar" aria-hidden="true">{userInitial}</span>
           </div>
         </header>
