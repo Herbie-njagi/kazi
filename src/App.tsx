@@ -1,0 +1,314 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { Session, SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from './lib/database.types';
+import { supabase } from './lib/supabase';
+import type { Business, BusinessRole, WorkspaceData } from './app.types';
+import { ConfigurationNotice, LoadingScreen } from './components';
+import { AuthScreen, BusinessSetup } from './onboarding';
+import { PlatformAdminDashboard } from './PlatformAdminDashboard';
+import { Workspace } from './Workspace';
+
+const emptyData: WorkspaceData = {
+  products: [],
+  customers: [],
+  sales: [],
+  saleItems: [],
+  inventoryMovements: [],
+  cashSessions: [],
+  cashMovements: [],
+};
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    return String(error.message);
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+export default function App() {
+  if (!supabase) return <ConfigurationNotice />;
+  return <ConnectedApp client={supabase} />;
+}
+
+function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [businessRoles, setBusinessRoles] = useState<Record<string, BusinessRole>>({});
+  const [business, setBusiness] = useState<Business | null>(null);
+  const [role, setRole] = useState<BusinessRole>('staff');
+  const [data, setData] = useState<WorkspaceData>(emptyData);
+  const [loading, setLoading] = useState(true);
+  const [loadingBusinesses, setLoadingBusinesses] = useState(true);
+  const [loadingData, setLoadingData] = useState(false);
+  const [platformAdmin, setPlatformAdmin] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+
+  const loadWorkspaceData = useCallback(async (businessId: string) => {
+    setLoadingData(true);
+    try {
+      const since = new Date();
+      since.setDate(since.getDate() - 365);
+      const [products, customers, sales, saleItems, inventoryMovements, cashSessions] =
+        await Promise.all([
+          client.from('products').select('*').eq('business_id', businessId).order('name'),
+          client.from('customers').select('*').eq('business_id', businessId).order('name'),
+          client
+            .from('sales')
+            .select('*')
+            .eq('business_id', businessId)
+            .gte('created_at', since.toISOString())
+            .order('created_at', { ascending: false })
+            .limit(1000),
+          client.from('sale_items').select('*').eq('business_id', businessId).limit(5000),
+          client
+            .from('inventory_movements')
+            .select('*')
+            .eq('business_id', businessId)
+            .order('created_at', { ascending: false })
+            .limit(200),
+          client
+            .from('cash_sessions')
+            .select('*')
+            .eq('business_id', businessId)
+            .order('opened_at', { ascending: false })
+            .limit(20),
+        ]);
+      const firstError = [
+        products.error,
+        customers.error,
+        sales.error,
+        saleItems.error,
+        inventoryMovements.error,
+        cashSessions.error,
+      ].find(Boolean);
+      if (firstError) throw firstError;
+
+      const sessionIds = (cashSessions.data ?? []).map((cashSession) => cashSession.id);
+      const cashMovements = sessionIds.length
+        ? await client.from('cash_movements').select('*').in('session_id', sessionIds)
+        : { data: [], error: null };
+      if (cashMovements.error) throw cashMovements.error;
+
+      setData({
+        products: products.data ?? [],
+        customers: customers.data ?? [],
+        sales: sales.data ?? [],
+        saleItems: saleItems.data ?? [],
+        inventoryMovements: inventoryMovements.data ?? [],
+        cashSessions: cashSessions.data ?? [],
+        cashMovements: cashMovements.data ?? [],
+      });
+    } finally {
+      setLoadingData(false);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    let active = true;
+    void client.auth.getSession().then(({ data: authData, error }) => {
+      if (!active) return;
+      if (error) setErrorMessage(error.message);
+      setSession(authData.session);
+      setLoading(false);
+    }).catch((error: unknown) => {
+      if (active) {
+        setErrorMessage(getErrorMessage(error));
+        setLoading(false);
+      }
+    });
+
+    const { data: authListener } = client.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setBusinesses([]);
+      setBusinessRoles({});
+      setBusiness(null);
+      setData(emptyData);
+      setPlatformAdmin(false);
+      setLoadingBusinesses(Boolean(nextSession));
+      setErrorMessage('');
+    });
+    return () => {
+      active = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (!session?.user.id) {
+      setBusinesses([]);
+      setBusinessRoles({});
+      setBusiness(null);
+      setPlatformAdmin(false);
+      setLoadingBusinesses(false);
+      return;
+    }
+    let active = true;
+    setLoadingBusinesses(true);
+    const loadBusinesses = async () => {
+      const { data: isPlatformAdmin, error: adminCheckError } = await client.rpc('is_platform_admin');
+      if (adminCheckError) throw adminCheckError;
+      if (isPlatformAdmin) {
+        if (active) {
+          setPlatformAdmin(true);
+          setBusinesses([]);
+          setBusinessRoles({});
+          setBusiness(null);
+          setLoadingBusinesses(false);
+        }
+        return;
+      }
+      if (active) setPlatformAdmin(false);
+
+      const { data: memberships, error: membershipsError } = await client
+        .from('business_members')
+        .select('business_id, role')
+        .eq('user_id', session.user.id);
+      if (membershipsError) throw membershipsError;
+
+      const businessIds = (memberships ?? []).map((membership) => membership.business_id);
+      if (!businessIds.length) {
+        if (active) {
+          setBusinesses([]);
+          setBusinessRoles({});
+          setBusiness(null);
+          setLoadingBusinesses(false);
+        }
+        return;
+      }
+
+      const { data: records, error: businessError } = await client
+        .from('businesses')
+        .select('id, name, currency_code, tax_rate')
+        .in('id', businessIds)
+        .order('name');
+      if (businessError) throw businessError;
+      if (!active) return;
+
+      const availableBusinesses = records ?? [];
+      const roles: Record<string, BusinessRole> = {};
+      for (const membership of memberships ?? []) roles[membership.business_id] = membership.role;
+      const selectedBusiness =
+        availableBusinesses.find((item) => item.id === business?.id) ?? availableBusinesses[0] ?? null;
+      setBusinesses(availableBusinesses);
+      setBusinessRoles(roles);
+      setBusiness(selectedBusiness);
+      setRole(selectedBusiness ? roles[selectedBusiness.id] ?? 'staff' : 'staff');
+      setLoadingBusinesses(false);
+    };
+
+    void loadBusinesses().catch((error: unknown) => {
+      if (active) {
+        setErrorMessage(getErrorMessage(error));
+        setLoadingBusinesses(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [client, session?.user.id]);
+
+  useEffect(() => {
+    if (!business) {
+      setData(emptyData);
+      return;
+    }
+    void loadWorkspaceData(business.id).catch((error: unknown) => {
+      setErrorMessage(getErrorMessage(error));
+    });
+  }, [business?.id, loadWorkspaceData]);
+
+  const runAction = useCallback(async (action: () => Promise<void>, success: string) => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    try {
+      await action();
+      setSuccessMessage(success);
+      return true;
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+      return false;
+    }
+  }, []);
+
+  const refresh = useCallback(async () => {
+    if (!business) return;
+    try {
+      await loadWorkspaceData(business.id);
+    } catch (error) {
+      setErrorMessage(`The change was saved, but refreshing data failed: ${getErrorMessage(error)}`);
+    }
+  }, [business, loadWorkspaceData]);
+
+  const signOut = async () => {
+    const { error } = await client.auth.signOut();
+    if (error) setErrorMessage(error.message);
+  };
+
+  if (loading) return <LoadingScreen label="Loading your workspace…" />;
+  if (!session) {
+    return (
+      <AuthScreen
+        error={errorMessage}
+        onClearError={() => setErrorMessage('')}
+      />
+    );
+  }
+  if (loadingBusinesses) return <LoadingScreen label="Loading your businesses…" />;
+  if (platformAdmin) {
+    return <PlatformAdminDashboard email={session.user.email ?? ''} onSignOut={signOut} />;
+  }
+  if (!business) {
+    if (businesses.length) return <LoadingScreen label="Loading your business…" />;
+    return (
+      <BusinessSetup
+        email={session.user.email ?? ''}
+        error={errorMessage}
+        onCreate={async (name) => runAction(async () => {
+          const { data: newBusinessId, error } = await client.rpc('create_business', { p_name: name });
+          if (error) throw error;
+          const { data: newBusiness, error: fetchError } = await client
+            .from('businesses')
+            .select('id, name, currency_code, tax_rate')
+            .eq('id', newBusinessId)
+            .single();
+          if (fetchError) throw fetchError;
+          setBusinesses([newBusiness]);
+          setBusinessRoles({ [newBusiness.id]: 'owner' });
+          setBusiness(newBusiness);
+          setRole('owner');
+        }, 'Business created.')}
+        onSignOut={signOut}
+      />
+    );
+  }
+
+  return (
+    <Workspace
+      business={business}
+      businesses={businesses}
+      role={role}
+      data={data}
+      loadingData={loadingData}
+      errorMessage={errorMessage}
+      successMessage={successMessage}
+      onDismissMessage={() => { setErrorMessage(''); setSuccessMessage(''); }}
+      onChangeBusiness={(nextBusiness) => {
+        setBusiness(nextBusiness);
+        setRole(businessRoles[nextBusiness.id] ?? 'staff');
+        setData(emptyData);
+        setErrorMessage('');
+        setSuccessMessage('');
+      }}
+      onRunAction={runAction}
+      onRefresh={refresh}
+      onBusinessUpdated={(name) => {
+        setBusiness((current) => current ? { ...current, name } : current);
+        setBusinesses((current) => current.map((item) => item.id === business.id ? { ...item, name } : item));
+      }}
+      onSignOut={signOut}
+      sessionEmail={session.user.email ?? ''}
+    />
+  );
+}
