@@ -12,6 +12,11 @@ const localKey = typeof window !== 'undefined' ? localStorage.getItem('pos26_sup
 const supabaseUrl = envUrl || localUrl;
 const supabaseAnonKey = envKey || localKey;
 
+export const supabaseConfig = {
+  url: supabaseUrl || '',
+  anonKey: supabaseAnonKey || '',
+};
+
 export const isUsingMockDatabase = !supabaseUrl || !supabaseAnonKey;
 
 export const supabase: SupabaseClient<Database> =

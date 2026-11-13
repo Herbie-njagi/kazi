@@ -312,6 +312,20 @@ export type Database = {
         Args: Empty;
         Returns: { total_businesses: number; subscribed_businesses: number }[];
       };
+      get_platform_businesses: {
+        Args: Empty;
+        Returns: {
+          id: string;
+          name: string;
+          payment_method: string | null;
+          payment_identifier: string | null;
+          subscription_status: string;
+          mpesa_configured: boolean;
+          mpesa_environment: 'sandbox' | 'production' | null;
+          mpesa_shortcode: string | null;
+          mpesa_consumer_key: string | null;
+        }[];
+      };
       get_business_subscription: {
         Args: { p_business_id: string };
         Returns: {
@@ -332,6 +346,45 @@ export type Database = {
           p_business_id?: string | null;
         };
         Returns: boolean;
+      };
+      activate_business_subscription: {
+        Args: {
+          p_business_id: string;
+          p_billing_interval: 'monthly' | 'yearly';
+          p_provider_reference: string;
+          p_amount_kes: number;
+        };
+        Returns: string;
+      };
+      save_business_mpesa_credentials: {
+        Args: {
+          p_business_id: string;
+          p_environment: 'sandbox' | 'production';
+          p_shortcode: string;
+          p_consumer_key: string;
+          p_consumer_secret?: string | null;
+          p_passkey?: string | null;
+        };
+        Returns: undefined;
+      };
+      get_business_mpesa_status: {
+        Args: { p_business_id: string };
+        Returns: {
+          configured: boolean;
+          environment: 'sandbox' | 'production';
+          shortcode: string;
+          consumer_key: string;
+        }[];
+      };
+      get_business_mpesa_credentials: {
+        Args: { p_business_id: string };
+        Returns: {
+          environment: 'sandbox' | 'production';
+          shortcode: string;
+          consumer_key: string;
+          consumer_secret: string;
+          passkey: string;
+        }[];
       };
     };
     Enums: Empty;

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ClipboardList,
+  Clock,
   LayoutDashboard,
   LogOut,
   Package,
@@ -14,7 +15,8 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { AppView, Business, CartLine, WorkspaceProps } from './app.types';
+import type { AppView, Business, BusinessSubscription, CartLine, WorkspaceProps } from './app.types';
+import { formatSubscriptionCountdown, SUBSCRIPTION_DAYS } from './BillingPanel';
 import { LoadingScreen } from './components';
 import { FeaturePage } from './features';
 import { isUsingMockDatabase } from './lib/supabase';
@@ -32,12 +34,15 @@ const navigation: { id: AppView; label: string; icon: typeof LayoutDashboard }[]
 
 type Props = WorkspaceProps & {
   businesses: Business[];
+  subscription: BusinessSubscription | null;
+  nowMs: number;
   loadingData: boolean;
   errorMessage: string;
   successMessage: string;
   onDismissMessage: () => void;
   onChangeBusiness: (business: Business) => void;
   onRunAction: (action: () => Promise<void>, success: string) => Promise<boolean>;
+  onSubscriptionUpdated: () => Promise<void>;
 };
 
 export function Workspace(props: Props) {
@@ -47,6 +52,14 @@ export function Workspace(props: Props) {
   const [mpesaReference, setMpesaReference] = useState('');
   const pageTitle = navigation.find((item) => item.id === view)?.label ?? 'Dashboard';
   const userInitial = (props.sessionEmail[0] ?? 'K').toUpperCase();
+
+  const totalPlanDays = props.subscription?.billing_interval === 'yearly'
+    ? SUBSCRIPTION_DAYS.yearly
+    : SUBSCRIPTION_DAYS.monthly;
+  const endMs = props.subscription ? new Date(props.subscription.current_period_end).getTime() : 0;
+  const remainingMs = Math.max(0, endMs - props.nowMs);
+  const countdown = formatSubscriptionCountdown(remainingMs);
+  const progressPct = Math.min(100, Math.max(0, (remainingMs / (totalPlanDays * 86400000)) * 100));
 
   return (
     <div className="app-shell">
@@ -93,6 +106,25 @@ export function Workspace(props: Props) {
           ))}
         </nav>
 
+        {props.subscription && (
+          <div className="sidebar-timer" aria-label="Subscription countdown">
+            <div className="sidebar-timer-head">
+              <span className="sidebar-timer-plan">
+                <Clock size={12} aria-hidden="true" />
+                {props.subscription.billing_interval === 'yearly' ? 'Annual · 360d' : 'Monthly · 30d'}
+              </span>
+              <span className="sidebar-timer-badge">{countdown.days}d left</span>
+            </div>
+            <strong className="sidebar-timer-clock">{countdown.formatted}</strong>
+            <div className="sidebar-timer-bar" aria-hidden="true">
+              <span style={{ width: `${progressPct}%` }} />
+            </div>
+            <small className="sidebar-timer-expiry">
+              Ends {new Intl.DateTimeFormat('en-KE', { dateStyle: 'medium' }).format(new Date(props.subscription.current_period_end))}
+            </small>
+          </div>
+        )}
+
         <div className="sidebar-bottom">
           <button type="button" className={`nav-link${view === 'settings' ? ' active' : ''}`} onClick={() => setView('settings')}>
             <Settings size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -116,6 +148,12 @@ export function Workspace(props: Props) {
             <h1 className="mobile-page-title">{pageTitle}</h1>
           </div>
           <div className="topbar-right">
+            {props.subscription && (
+              <span className="topbar-timer" title="Subscription time remaining">
+                <Clock size={13} aria-hidden="true" />
+                {countdown.formatted}
+              </span>
+            )}
             <span className="today-label">
               {new Intl.DateTimeFormat('en-KE', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}
             </span>
@@ -150,6 +188,7 @@ export function Workspace(props: Props) {
               onRunAction={props.onRunAction}
               onRefresh={props.onRefresh}
               onBusinessUpdated={props.onBusinessUpdated}
+              onSubscriptionUpdated={props.onSubscriptionUpdated}
               sessionEmail={props.sessionEmail}
               onSignOut={props.onSignOut}
             />

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
   Archive,
@@ -35,7 +35,7 @@ import type {
   WorkspaceData,
 } from './app.types';
 import { formatDate, formatMoney, formatQuantity } from './format';
-import { supabase } from './lib/supabase';
+import { isUsingMockDatabase, supabase, supabaseConfig } from './lib/supabase';
 import { BillingPanel } from './BillingPanel';
 
 function getClient() {
@@ -58,6 +58,7 @@ type Props = {
   onRunAction: (action: () => Promise<void>, success: string) => Promise<boolean>;
   onRefresh: () => Promise<void>;
   onBusinessUpdated: (business: Business) => void;
+  onSubscriptionUpdated?: () => Promise<void>;
   sessionEmail: string;
   onSignOut: () => Promise<void>;
 };
@@ -440,13 +441,17 @@ function PosPage(props: Props) {
 
   const checkout = async () => {
     if (!props.cart.length) return;
-    const success = await props.onRunAction(async () => {
+    const phone = customerPhone.trim();
+    let successMessage = 'Sale completed and stock updated.';
+
+    const recordSale = async (referenceOverride?: string) => {
+      const ref = props.mpesaReference.trim() || referenceOverride || null;
       const { data: receipts, error } = await getClient().rpc('create_sale', {
         p_business_id: props.business.id,
         p_customer_id: props.selectedCustomer || null,
         p_items: props.cart.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
-        p_mpesa_reference: props.mpesaReference.trim() || null,
-        p_customer_phone: customerPhone.trim() || null,
+        p_mpesa_reference: ref,
+        p_customer_phone: phone || null,
       });
       if (error) throw error;
       const receipt = receipts?.[0];
@@ -455,8 +460,58 @@ function PosPage(props: Props) {
       props.setCart([]);
       props.setSelectedCustomer('');
       props.setMpesaReference('');
+      setCustomerPhone('');
       await props.onRefresh();
-    }, 'Sale completed and stock updated.');
+    };
+
+    const success = await props.onRunAction(async () => {
+      let gatewayReference: string | undefined;
+
+      if (phone) {
+        const client = getClient();
+        const { data: sessionData } = await client.auth.getSession();
+        let mockCredentials: Record<string, unknown> | null = null;
+        if (isUsingMockDatabase) {
+          const { data: mockRows } = await client.rpc('get_business_mpesa_credentials', {
+            p_business_id: props.business.id,
+          });
+          mockCredentials = mockRows?.[0] ?? null;
+        }
+
+        const response = await fetch('/api/stk-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: total,
+            phone,
+            businessId: props.business.id,
+            businessName: props.business.name,
+            paymentMethod: props.business.payment_method,
+            paymentIdentifier: props.business.payment_identifier,
+            accessToken: sessionData.session?.access_token,
+            supabaseUrl: supabaseConfig.url,
+            supabaseAnonKey: supabaseConfig.anonKey,
+            mockCredentials,
+          }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          reference?: string;
+          customerMessage?: string;
+        };
+
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to initiate M-Pesa STK Push.');
+        }
+
+        gatewayReference = payload.reference;
+        successMessage = payload.customerMessage
+          ? `${payload.customerMessage} Sale recorded.`
+          : `M-Pesa prompt sent to ${phone} for ${props.business.name}. Sale recorded.`;
+      }
+
+      await recordSale(gatewayReference);
+    }, successMessage);
     if (success) setQuery('');
   };
 
@@ -489,9 +544,28 @@ function PosPage(props: Props) {
             ))}
           </div>
           <div className="checkout-fields">
-            <label className="field"><span>Customer <small>Optional</small></span><select value={props.selectedCustomer} onChange={(event) => props.setSelectedCustomer(event.target.value)}><option value="">Walk-in customer</option>{props.data.customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.name}{customer.phone ? ` · ${customer.phone}` : ''}</option>)}</select></label>
+            <label className="field">
+              <span>Customer <small>Optional</small></span>
+              <select
+                value={props.selectedCustomer}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  props.setSelectedCustomer(nextId);
+                  const chosen = props.data.customers.find((customer) => customer.id === nextId);
+                  if (chosen?.phone && !customerPhone.trim()) {
+                    setCustomerPhone(chosen.phone);
+                  }
+                }}
+              >
+                <option value="">Walk-in customer</option>
+                {props.data.customers.map((customer) => <option value={customer.id} key={customer.id}>{customer.name}{customer.phone ? ` · ${customer.phone}` : ''}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span>Customer M-Pesa phone <small>Prompts STK Push</small></span>
+              <input type="tel" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} maxLength={20} placeholder="e.g. 0712345678" />
+            </label>
             <label className="field"><span>M-Pesa reference <small>Optional</small></span><input value={props.mpesaReference} onChange={(event) => props.setMpesaReference(event.target.value)} maxLength={64} placeholder="e.g. QHX7AB12CD" /></label>
-            <label className="field"><span>Customer phone <small>Optional</small></span><input type="tel" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} maxLength={20} placeholder="e.g. 07XXXXXXXX" /></label>
           </div>
           <div className="cart-summary">
             <div><span>Subtotal</span><span>{formatMoney(total)}</span></div><div><span>Tax</span><span>{formatMoney(0)}</span></div>
@@ -501,8 +575,15 @@ function PosPage(props: Props) {
                 <p style={{ margin: 0 }}>Pay to: <strong>{props.business.payment_method?.toUpperCase()} · {props.business.payment_identifier}</strong></p>
               </div>
             )}
-            <p className="payment-note"><span className="mpesa-mark">M</span> Confirm payment before recording this sale</p>
-            <button type="button" className="primary-button full-width" disabled={!props.cart.length} onClick={() => void checkout()}>Complete sale <ArrowRight size={17} /></button>
+            <p className="payment-note">
+              <span className="mpesa-mark">M</span>
+              {customerPhone.trim()
+                ? `Will send STK Push prompt to ${customerPhone.trim()}`
+                : 'Enter customer phone to prompt M-Pesa, or confirm manual payment'}
+            </p>
+            <button type="button" className="primary-button full-width" disabled={!props.cart.length} onClick={() => void checkout()}>
+              {customerPhone.trim() ? 'Send M-Pesa Prompt & Complete sale' : 'Complete sale'} <ArrowRight size={17} />
+            </button>
           </div>
         </aside>
       </div>
@@ -784,6 +865,13 @@ function SettingsPage(props: Props) {
   const [paymentMethod, setPaymentMethod] = useState(props.business.payment_method ?? 'till');
   const [paymentIdentifier, setPaymentIdentifier] = useState(props.business.payment_identifier ?? '');
   const canManage = props.role !== 'staff';
+
+  useEffect(() => {
+    setName(props.business.name);
+    setPaymentMethod(props.business.payment_method ?? 'till');
+    setPaymentIdentifier(props.business.payment_identifier ?? '');
+  }, [props.business.id, props.business.name, props.business.payment_method, props.business.payment_identifier]);
+
   const dirty = name.trim() !== props.business.name || paymentMethod !== (props.business.payment_method ?? 'till') || paymentIdentifier.trim() !== (props.business.payment_identifier ?? '');
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -807,11 +895,15 @@ function SettingsPage(props: Props) {
 
   return (
     <>
-      <PageHeading eyebrow="WORKSPACE PREFERENCES" title="Settings" description="Manage business details, payment recording and your account." />
+      <PageHeading eyebrow="WORKSPACE PREFERENCES" title="Settings" description="Manage business details, Till or Paybill info, subscription billing and your account." />
       <div className="settings-layout">
-        <BillingPanel businessId={props.business.id} role={props.role} />
+        <BillingPanel
+          businessId={props.business.id}
+          role={props.role}
+          onSubscriptionUpdated={props.onSubscriptionUpdated}
+        />
         <section className="panel settings-panel">
-          <div className="panel-heading"><div><h3>Business details</h3><p>Workspace information used across your records.</p></div></div>
+          <div className="panel-heading"><div><h3>Business details</h3><p>Workspace information and receiving Till or Paybill.</p></div></div>
           <form className="form-stack settings-form" onSubmit={(event) => void save(event)}>
             <label className="field"><span>Business name</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required disabled={!canManage} /></label>
             <label className="field">
@@ -823,13 +915,14 @@ function SettingsPage(props: Props) {
                 <option value="phone">Phone Number</option>
               </select>
             </label>
-            <label className="field"><span>Payment identifier</span><input value={paymentIdentifier} onChange={(event) => setPaymentIdentifier(event.target.value)} maxLength={120} disabled={!canManage} placeholder="e.g. 123456" /></label>
+            <label className="field"><span>Payment identifier (Till / Paybill / Phone)</span><input value={paymentIdentifier} onChange={(event) => setPaymentIdentifier(event.target.value)} maxLength={120} disabled={!canManage} placeholder="e.g. 123456" /></label>
             <div className="settings-static-row"><span>Business ID</span><code>{props.business.id}</code></div>
             <div className="settings-static-row"><span>Currency</span><strong>{props.business.currency_code} · Kenyan shilling</strong></div>
             {canManage && <button className="primary-button" type="submit" disabled={!dirty}><Check size={16} /> Save business details</button>}
             {!canManage && <p className="field-help">Only a business owner or administrator can edit workspace details.</p>}
           </form>
         </section>
+
         <section className="panel settings-panel">
           <div className="panel-heading"><div><h3>Your account</h3><p>Signed-in identity and workspace role.</p></div></div>
           <div className="account-summary"><span className="account-avatar">{props.sessionEmail.slice(0, 1).toUpperCase()}</span><span><strong>{props.sessionEmail}</strong><small>{props.role}</small></span></div>
@@ -837,7 +930,7 @@ function SettingsPage(props: Props) {
           <button type="button" className="secondary-button signout-button" onClick={() => void props.onSignOut()}><LogOut size={16} /> Sign out</button>
         </section>
       </div>
-      <section className="panel settings-note"><div className="settings-note-icon"><CircleHelp size={18} /></div><div><h3>Payment and tax settings</h3><p>This workspace records M-Pesa sales in KES and does not apply tax. The app does not initiate or verify M-Pesa payments.</p></div></section>
+      <section className="panel settings-note"><div className="settings-note-icon"><CircleHelp size={18} /></div><div><h3>M-Pesa checkout & billing</h3><p>Customer M-Pesa prompts use your business&apos;s Till or Paybill settings so payments show your business name and settle directly to you. POS26 subscriptions are billed separately via Paystack.</p></div></section>
     </>
   );
 }

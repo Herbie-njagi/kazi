@@ -13,6 +13,13 @@ export type CashSession = Row<'cash_sessions'>;
 export type CashMovement = Row<'cash_movements'>;
 export type BusinessRole = 'owner' | 'admin' | 'staff';
 
+export type BusinessSubscription = {
+  provider: string;
+  billing_interval: string;
+  status: string;
+  current_period_end: string;
+};
+
 export type WorkspaceData = {
   products: Product[];
   customers: Customer[];

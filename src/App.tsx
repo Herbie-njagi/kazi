@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from './lib/database.types';
 import { supabase } from './lib/supabase';
-import type { Business, BusinessRole, WorkspaceData } from './app.types';
+import type { Business, BusinessRole, BusinessSubscription, WorkspaceData } from './app.types';
+import { SubscriptionGateCard } from './BillingPanel';
 import { ConfigurationNotice, LoadingScreen } from './components';
 import { AuthScreen, BusinessSetup } from './onboarding';
 import { PlatformAdminDashboard } from './PlatformAdminDashboard';
@@ -40,6 +41,9 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
   const [data, setData] = useState<WorkspaceData>(emptyData);
   const [loading, setLoading] = useState(true);
   const [loadingBusinesses, setLoadingBusinesses] = useState(true);
+  const [loadingSubscription, setLoadingSubscription] = useState(false);
+  const [subscription, setSubscription] = useState<BusinessSubscription | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [loadingData, setLoadingData] = useState(false);
   const [platformAdmin, setPlatformAdmin] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -274,15 +278,61 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
     };
   }, [client, session?.user.id]);
 
+  const loadSubscription = useCallback(async (businessId: string) => {
+    setLoadingSubscription(true);
+    try {
+      const { data: subData, error: subError } = await client.rpc('get_business_subscription', {
+        p_business_id: businessId,
+      });
+      if (subError) {
+        if (!subError.message.includes('schema cache')) {
+          setErrorMessage(subError.message);
+        }
+        setSubscription(null);
+      } else {
+        setSubscription(subData?.[0] ?? null);
+        setNowMs(Date.now());
+      }
+    } catch {
+      setSubscription(null);
+    } finally {
+      setLoadingSubscription(false);
+    }
+  }, [client]);
+
   useEffect(() => {
     if (!business) {
+      setSubscription(null);
+      setLoadingSubscription(false);
+      return;
+    }
+    void loadSubscription(business.id);
+  }, [business?.id, loadSubscription]);
+
+  useEffect(() => {
+    if (!subscription) return;
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [subscription?.current_period_end, subscription?.status]);
+
+  const subscriptionEndMs = subscription ? new Date(subscription.current_period_end).getTime() : 0;
+  const isSubscriptionActive = Boolean(
+    subscription &&
+    subscription.status === 'active' &&
+    subscriptionEndMs > nowMs,
+  );
+
+  useEffect(() => {
+    if (!business || !isSubscriptionActive) {
       setData(emptyData);
       return;
     }
     void loadWorkspaceData(business.id).catch((error: unknown) => {
       setErrorMessage(getErrorMessage(error));
     });
-  }, [business?.id, loadWorkspaceData]);
+  }, [business?.id, isSubscriptionActive, loadWorkspaceData]);
 
   const runAction = useCallback(async (action: () => Promise<void>, success: string) => {
     setErrorMessage('');
@@ -349,10 +399,35 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
     );
   }
 
+  if (loadingSubscription) return <LoadingScreen label="Checking your subscription…" />;
+  if (!isSubscriptionActive) {
+    return (
+      <SubscriptionGateCard
+        business={business}
+        businesses={businesses}
+        role={role}
+        subscription={subscription}
+        onChangeBusiness={(nextBusiness) => {
+          setBusiness(nextBusiness);
+          setRole(businessRoles[nextBusiness.id] ?? 'staff');
+          setData(emptyData);
+          setErrorMessage('');
+          setSuccessMessage('');
+        }}
+        onSubscriptionUpdated={async () => {
+          await loadSubscription(business.id);
+        }}
+        onSignOut={signOut}
+      />
+    );
+  }
+
   return (
     <Workspace
       business={business}
       businesses={businesses}
+      subscription={subscription}
+      nowMs={nowMs}
       role={role}
       data={data}
       loadingData={loadingData}
@@ -371,6 +446,9 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
       onBusinessUpdated={(updatedBusiness) => {
         setBusiness(updatedBusiness);
         setBusinesses((current) => current.map((item) => item.id === updatedBusiness.id ? updatedBusiness : item));
+      }}
+      onSubscriptionUpdated={async () => {
+        await loadSubscription(business.id);
       }}
       onSignOut={signOut}
       sessionEmail={session.user.email ?? ''}

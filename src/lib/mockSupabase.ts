@@ -13,6 +13,7 @@ export interface MockStore {
   cash_sessions: any[];
   cash_movements: any[];
   business_subscriptions: any[];
+  business_mpesa_credentials?: any[];
 }
 
 const STORAGE_KEY = 'pos26_mock_store_v1';
@@ -297,6 +298,7 @@ function createInitialStore(): MockStore {
         updated_at: todayIso,
       },
     ],
+    business_mpesa_credentials: [],
   };
 }
 
@@ -437,15 +439,44 @@ export function createMockSupabaseClient(): any {
         return { data: isAdmin, error: null };
       }
       case 'get_platform_overview': {
+        const now = Date.now();
+        const activeSubs = store.business_subscriptions.filter(
+          (s) => s.status === 'active' && new Date(s.current_period_end).getTime() > now,
+        ).length;
         return {
           data: [
             {
               total_businesses: store.businesses.length,
-              subscribed_businesses: store.businesses.length,
+              subscribed_businesses: activeSubs,
             },
           ],
           error: null,
         };
+      }
+      case 'get_platform_businesses': {
+        const now = Date.now();
+        const rows = store.businesses.map((biz) => {
+          const sub = store.business_subscriptions.find((s) => s.business_id === biz.id);
+          const subStatus =
+            sub && sub.status === 'active' && new Date(sub.current_period_end).getTime() > now
+              ? 'active'
+              : sub
+                ? 'past_due'
+                : 'unsubscribed';
+          const creds = (store.business_mpesa_credentials ?? []).find((c) => c.business_id === biz.id);
+          return {
+            id: biz.id,
+            name: biz.name,
+            payment_method: biz.payment_method ?? 'till',
+            payment_identifier: biz.payment_identifier ?? null,
+            subscription_status: subStatus,
+            mpesa_configured: Boolean(creds),
+            mpesa_environment: creds?.environment ?? null,
+            mpesa_shortcode: creds?.shortcode ?? null,
+            mpesa_consumer_key: creds?.consumer_key ?? null,
+          };
+        });
+        return { data: rows, error: null };
       }
       case 'create_business': {
         const id = 'biz_' + Math.random().toString(36).substring(2, 9);
@@ -454,6 +485,8 @@ export function createMockSupabaseClient(): any {
           name: params.p_name,
           currency_code: 'KES',
           tax_rate: 0,
+          payment_method: 'till',
+          payment_identifier: null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
@@ -636,33 +669,42 @@ export function createMockSupabaseClient(): any {
         return { data: movementId, error: null };
       }
       case 'get_business_subscription': {
-        const sub = store.business_subscriptions.find((s) => s.business_id === params.p_business_id) || store.business_subscriptions[0];
+        const sub = store.business_subscriptions.find((s) => s.business_id === params.p_business_id);
+        if (!sub) return { data: [], error: null };
+        const expired = sub.status === 'active' && new Date(sub.current_period_end).getTime() <= Date.now();
         return {
-          data: sub ? [sub] : [],
+          data: [{ ...sub, status: expired ? 'past_due' : sub.status }],
           error: null,
         };
       }
+      case 'activate_business_subscription':
       case 'record_subscription_payment': {
         const businessId = params.p_business_id || store.businesses[0]?.id || 'biz_demo_001';
         const now = new Date();
-        const isYearly = Number(params.p_amount_kes) >= 6000;
-        const periodEnd = new Date(now.getTime() + (isYearly ? 365 : 30) * 86400000);
-        const sub = store.business_subscriptions.find((s) => s.business_id === businessId);
-        if (sub) {
-          sub.provider = 'paystack';
-          sub.billing_interval = isYearly ? 'yearly' : 'monthly';
-          sub.status = 'active';
-          sub.current_period_start = now.toISOString();
-          sub.current_period_end = periodEnd.toISOString();
-          sub.provider_subscription_id = params.p_provider_reference || 'sub_psk_demo';
-          sub.updated_at = now.toISOString();
+        const isYearly = params.p_billing_interval === 'yearly' || Number(params.p_amount_kes) >= 6000;
+        const durationDays = isYearly ? 360 : 30;
+        const existing = store.business_subscriptions.find((s) => s.business_id === businessId);
+        const startMs =
+          existing && existing.status === 'active' && new Date(existing.current_period_end).getTime() > now.getTime()
+            ? new Date(existing.current_period_end).getTime()
+            : now.getTime();
+        const periodStart = new Date(startMs);
+        const periodEnd = new Date(startMs + durationDays * 86400000);
+        if (existing) {
+          existing.provider = 'paystack';
+          existing.billing_interval = isYearly ? 'yearly' : 'monthly';
+          existing.status = 'active';
+          existing.current_period_start = periodStart.toISOString();
+          existing.current_period_end = periodEnd.toISOString();
+          existing.provider_subscription_id = params.p_provider_reference || 'sub_psk_demo';
+          existing.updated_at = now.toISOString();
         } else {
           store.business_subscriptions.push({
             business_id: businessId,
             provider: 'paystack',
             billing_interval: isYearly ? 'yearly' : 'monthly',
             status: 'active',
-            current_period_start: now.toISOString(),
+            current_period_start: periodStart.toISOString(),
             current_period_end: periodEnd.toISOString(),
             provider_subscription_id: params.p_provider_reference || 'sub_psk_demo',
             provider_customer_id: null,
@@ -670,7 +712,38 @@ export function createMockSupabaseClient(): any {
           });
         }
         persist();
-        return { data: true, error: null };
+        return { data: fn === 'activate_business_subscription' ? periodEnd.toISOString() : true, error: null };
+      }
+      case 'save_business_mpesa_credentials': {
+        if (!store.business_mpesa_credentials) store.business_mpesa_credentials = [];
+        const idx = store.business_mpesa_credentials.findIndex((c) => c.business_id === params.p_business_id);
+        const existing = idx >= 0 ? store.business_mpesa_credentials[idx] : null;
+        const next = {
+          business_id: params.p_business_id,
+          environment: params.p_environment || 'sandbox',
+          shortcode: String(params.p_shortcode || '').trim(),
+          consumer_key: String(params.p_consumer_key || '').trim(),
+          consumer_secret: String(params.p_consumer_secret || '').trim() || existing?.consumer_secret || '',
+          passkey: String(params.p_passkey || '').trim() || existing?.passkey || '',
+          updated_at: new Date().toISOString(),
+        };
+        if (idx >= 0) store.business_mpesa_credentials[idx] = next;
+        else store.business_mpesa_credentials.push(next);
+        persist();
+        return { data: null, error: null };
+      }
+      case 'get_business_mpesa_status': {
+        const creds = (store.business_mpesa_credentials ?? []).find((c) => c.business_id === params.p_business_id);
+        return {
+          data: creds
+            ? [{ configured: true, environment: creds.environment, shortcode: creds.shortcode, consumer_key: creds.consumer_key }]
+            : [],
+          error: null,
+        };
+      }
+      case 'get_business_mpesa_credentials': {
+        const creds = (store.business_mpesa_credentials ?? []).find((c) => c.business_id === params.p_business_id);
+        return { data: creds ? [creds] : [], error: null };
       }
       default:
         return { data: null, error: null };
