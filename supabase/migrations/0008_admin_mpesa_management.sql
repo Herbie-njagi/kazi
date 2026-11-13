@@ -1,4 +1,50 @@
 -- Move Daraja credential management exclusively to SuperAdmin (platform_admins)
+-- and ensure platform admin RPC grants + SuperAdmin recognition work reliably.
+
+create or replace function public.is_platform_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (
+    exists (
+      select 1
+      from public.platform_admins
+      where user_id = (select auth.uid())
+    )
+    or lower(coalesce((select auth.jwt() ->> 'email'), '')) = 'herbietrade@gmail.com'
+  );
+$$;
+
+insert into public.platform_admins (user_id)
+select id
+from auth.users
+where lower(email) = 'herbietrade@gmail.com'
+on conflict (user_id) do nothing;
+
+create or replace function public.get_platform_overview()
+returns table (total_businesses bigint, subscribed_businesses bigint)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Platform administrator access required';
+  end if;
+
+  return query
+  select
+    (select count(*) from public.businesses),
+    (select count(*)
+      from public.business_subscriptions
+      where status = 'active' and current_period_end > now());
+end;
+$$;
+
 create or replace function public.get_platform_businesses()
 returns table (
   id uuid,
@@ -176,5 +222,16 @@ begin
 end;
 $$;
 
+revoke all on function public.is_platform_admin() from public, anon;
+revoke all on function public.get_platform_overview() from public, anon;
 revoke all on function public.get_platform_businesses() from public, anon;
+revoke all on function public.save_business_mpesa_credentials(uuid, text, text, text, text, text) from public, anon;
+revoke all on function public.get_business_mpesa_status(uuid) from public, anon;
+revoke all on function public.get_business_mpesa_credentials(uuid) from public, anon;
+
+grant execute on function public.is_platform_admin() to authenticated;
+grant execute on function public.get_platform_overview() to authenticated;
 grant execute on function public.get_platform_businesses() to authenticated;
+grant execute on function public.save_business_mpesa_credentials(uuid, text, text, text, text, text) to authenticated;
+grant execute on function public.get_business_mpesa_status(uuid) to authenticated;
+grant execute on function public.get_business_mpesa_credentials(uuid) to authenticated;

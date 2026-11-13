@@ -111,27 +111,11 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
 
   useEffect(() => {
     let active = true;
+    localStorage.removeItem('pos26_force_superadmin');
     void client.auth.getSession().then(({ data: authData, error }) => {
       if (!active) return;
-      let activeSession = authData.session;
-      if (!activeSession && localStorage.getItem('pos26_force_superadmin') === 'true') {
-        activeSession = {
-          access_token: 'forced-admin-token',
-          token_type: 'bearer',
-          expires_in: 3600,
-          refresh_token: 'forced-admin-refresh',
-          user: {
-            id: 'usr_herbietrade',
-            email: 'herbietrade@gmail.com',
-            app_metadata: {},
-            user_metadata: { display_name: 'Herbie Trade' },
-            aud: 'authenticated',
-            created_at: new Date().toISOString(),
-          } as any,
-        };
-      }
-      if (error && !activeSession) setErrorMessage(error.message);
-      setSession(activeSession);
+      if (error && !authData.session) setErrorMessage(error.message);
+      setSession(authData.session);
       setLoading(false);
     }).catch((error: unknown) => {
       if (active) {
@@ -141,30 +125,13 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
     });
 
     const { data: authListener } = client.auth.onAuthStateChange((_event, nextSession) => {
-      let activeSession = nextSession;
-      if (!activeSession && localStorage.getItem('pos26_force_superadmin') === 'true') {
-        activeSession = {
-          access_token: 'forced-admin-token',
-          token_type: 'bearer',
-          expires_in: 3600,
-          refresh_token: 'forced-admin-refresh',
-          user: {
-            id: 'usr_herbietrade',
-            email: 'herbietrade@gmail.com',
-            app_metadata: {},
-            user_metadata: { display_name: 'Herbie Trade' },
-            aud: 'authenticated',
-            created_at: new Date().toISOString(),
-          } as any,
-        };
-      }
-      setSession(activeSession);
+      setSession(nextSession);
       setBusinesses([]);
       setBusinessRoles({});
       setBusiness(null);
       setData(emptyData);
       setPlatformAdmin(false);
-      setLoadingBusinesses(Boolean(activeSession));
+      setLoadingBusinesses(Boolean(nextSession));
       setErrorMessage('');
     });
     return () => {
@@ -174,25 +141,7 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
   }, [client]);
 
   useEffect(() => {
-    let currentSession = session;
-    if (!currentSession && localStorage.getItem('pos26_force_superadmin') === 'true') {
-      currentSession = {
-        access_token: 'forced-admin-token',
-        token_type: 'bearer',
-        expires_in: 3600,
-        refresh_token: 'forced-admin-refresh',
-        user: {
-          id: 'usr_herbietrade',
-          email: 'herbietrade@gmail.com',
-          app_metadata: {},
-          user_metadata: { display_name: 'Herbie Trade' },
-          aud: 'authenticated',
-          created_at: new Date().toISOString(),
-        } as any,
-      };
-    }
-
-    if (!currentSession?.user.id) {
+    if (!session?.user.id) {
       setBusinesses([]);
       setBusinessRoles({});
       setBusiness(null);
@@ -204,8 +153,8 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
     setLoadingBusinesses(true);
     const loadBusinesses = async () => {
       let isPlatformAdmin = false;
-      const userEmail = currentSession?.user.email?.toLowerCase() ?? '';
-      if (userEmail === 'herbietrade@gmail.com' || localStorage.getItem('pos26_force_superadmin') === 'true') {
+      const userEmail = session.user.email?.toLowerCase() ?? '';
+      if (userEmail === 'herbietrade@gmail.com') {
         isPlatformAdmin = true;
       } else {
         try {
@@ -233,7 +182,7 @@ function ConnectedApp({ client }: { client: SupabaseClient<Database> }) {
       const { data: memberships, error: membershipsError } = await client
         .from('business_members')
         .select('business_id, role')
-        .eq('user_id', currentSession.user.id);
+        .eq('user_id', session.user.id);
       if (membershipsError) throw membershipsError;
 
       const businessIds = (memberships ?? []).map((membership) => membership.business_id);

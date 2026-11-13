@@ -25,13 +25,6 @@ export function AuthScreen({
     setNotice('');
     onClearError();
     try {
-      const trimmedEmail = email.trim().toLowerCase();
-      if (trimmedEmail === 'herbietrade@gmail.com' && password === '558623063') {
-        localStorage.setItem('pos26_force_superadmin', 'true');
-        window.location.reload();
-        return;
-      }
-
       if (registering) {
         const { data, error: authError } = await supabase.auth.signUp({
           email: email.trim(),
@@ -55,7 +48,10 @@ export function AuthScreen({
               options: { data: { display_name: email.trim().split('@')[0] } },
             });
             if (signUpError) throw signUpError;
-            if (signUpData.session) return;
+            if (!signUpData.session) {
+              setNotice('Check your email to confirm your account, then sign in.');
+            }
+            return;
           }
           throw authError;
         }
